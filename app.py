@@ -1,13 +1,9 @@
 from datetime import datetime, timedelta
 
-import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="simply-estimate", page_icon=":rocket:", layout="wide")
 
@@ -24,20 +20,25 @@ def calculate_pert_estimates(optimistic, pessimistic, most_likely):
     return expected_time, variance, std_dev
 
 
-def find_critical_path(tasks_df):
-    """Find the critical path using network analysis"""
+def find_critical_path(tasks_df, resource_constrained=True):
+    """Find the critical path using network analysis with optional resource constraints"""
     if tasks_df.empty:
         return [], {}, 0
 
     # Create a directed graph
     G = nx.DiGraph()
 
-    # Add nodes with expected times
+    # Add nodes with expected times and owner information
     for _, task in tasks_df.iterrows():
         expected_time, _, _ = calculate_pert_estimates(
             task["min_time"], task["max_time"], task["most_likely_time"]
         )
-        G.add_node(task["name"], duration=expected_time)
+        G.add_node(
+            task["task_id"],
+            duration=expected_time,
+            name=task["name"],
+            owner=task["owner"],
+        )
 
     # Add edges based on dependencies
     for _, task in tasks_df.iterrows():
@@ -46,8 +47,30 @@ def find_critical_path(tasks_df):
                 dep.strip() for dep in task["dependencies"].split(",") if dep.strip()
             ]
             for dep in deps:
-                if dep in [t["name"] for _, t in tasks_df.iterrows()]:
-                    G.add_edge(dep, task["name"])
+                if dep in [t["task_id"] for _, t in tasks_df.iterrows()]:
+                    G.add_edge(dep, task["task_id"])
+
+    # Add resource constraints: tasks with same owner cannot run in parallel
+    if resource_constrained:
+        tasks_by_owner = {}
+        for _, task in tasks_df.iterrows():
+            owner = task["owner"]
+            if owner not in tasks_by_owner:
+                tasks_by_owner[owner] = []
+            tasks_by_owner[owner].append(task["task_id"])
+
+        # For each owner, add dependencies between tasks that have no explicit dependencies
+        for owner, task_ids in tasks_by_owner.items():
+            if len(task_ids) > 1:
+                # Get tasks for this owner that have no dependencies
+                independent_tasks = []
+                for task_id in task_ids:
+                    if not list(G.predecessors(task_id)):  # No predecessors
+                        independent_tasks.append(task_id)
+
+                # Create a chain of independent tasks for the same owner
+                for i in range(len(independent_tasks) - 1):
+                    G.add_edge(independent_tasks[i], independent_tasks[i + 1])
 
     try:
         # Calculate earliest start and finish times
@@ -76,11 +99,11 @@ def find_critical_path(tasks_df):
         # Project completion time
         project_duration = max(earliest_finish.values()) if earliest_finish else 0
 
-        # Initialize latest finish times
+        # Initialize latest finish times for all end nodes
         for node in G.nodes():
             successors = list(G.successors(node))
             if not successors:  # End nodes
-                latest_finish[node] = earliest_finish[node]
+                latest_finish[node] = project_duration
 
         # Work backwards
         for node in reversed(list(nx.topological_sort(G))):
@@ -88,7 +111,7 @@ def find_critical_path(tasks_df):
             successors = list(G.successors(node))
 
             if not successors:
-                latest_finish[node] = earliest_finish[node]
+                latest_finish[node] = project_duration
             else:
                 latest_finish[node] = min(latest_start[succ] for succ in successors)
 
@@ -109,302 +132,257 @@ def find_critical_path(tasks_df):
         return [], {}, 0
 
 
-def create_gantt_chart(tasks_df, critical_path):
-    """Create a Gantt chart visualization"""
-    if tasks_df.empty:
-        return go.Figure()
-
-    fig = go.Figure()
-
-    for i, (_, task) in enumerate(tasks_df.iterrows()):
-        expected_time, _, _ = calculate_pert_estimates(
-            task["min_time"], task["max_time"], task["most_likely_time"]
-        )
-
-        color = "red" if task["name"] in critical_path else "blue"
-
-        fig.add_trace(
-            go.Bar(
-                y=[task["name"]],
-                x=[expected_time],
-                orientation="h",
-                name=task["name"],
-                marker_color=color,
-                text=f"{expected_time:.1f} days",
-                textposition="outside",
-            )
-        )
-
-    fig.update_layout(
-        title="Project Timeline (Gantt Chart)",
-        xaxis_title="Duration (Days)",
-        yaxis_title="Tasks",
-        showlegend=False,
-        height=max(400, len(tasks_df) * 40),
-    )
-
-    return fig
-
-
-def create_network_graph(tasks_df):
-    """Create a network graph showing task dependencies"""
-    if tasks_df.empty:
-        return go.Figure()
-
-    G = nx.DiGraph()
-
-    # Add nodes
-    for _, task in tasks_df.iterrows():
-        expected_time, _, _ = calculate_pert_estimates(
-            task["min_time"], task["max_time"], task["most_likely_time"]
-        )
-        G.add_node(task["name"], duration=expected_time)
-
-    # Add edges
-    for _, task in tasks_df.iterrows():
-        if task["dependencies"]:
-            deps = [
-                dep.strip() for dep in task["dependencies"].split(",") if dep.strip()
-            ]
-            for dep in deps:
-                if dep in [t["name"] for _, t in tasks_df.iterrows()]:
-                    G.add_edge(dep, task["name"])
-
-    # Create layout
-    pos = nx.spring_layout(G, k=3, iterations=50)
-
-    # Create edge traces
-    edge_x = []
-    edge_y = []
-    for edge in G.edges():
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        edge_x.extend([x0, x1, None])
-        edge_y.extend([y0, y1, None])
-
-    edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=2, color="gray"),
-        hoverinfo="none",
-        mode="lines",
-    )
-
-    # Create node traces
-    node_x = []
-    node_y = []
-    node_text = []
-    node_info = []
-
-    for node in G.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        node_text.append(node)
-        duration = G.nodes[node]["duration"]
-        node_info.append(f"{node}<br>Duration: {duration:.1f} days")
-
-    node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode="markers+text",
-        hoverinfo="text",
-        text=node_text,
-        hovertext=node_info,
-        textposition="middle center",
-        marker=dict(size=50, color="lightblue", line=dict(width=2, color="black")),
-    )
-
-    fig = go.Figure(
-        data=[edge_trace, node_trace],
-        layout=go.Layout(
-            title=dict(text="Task Dependency Network", font=dict(size=16)),
-            showlegend=False,
-            hovermode="closest",
-            margin=dict(b=20, l=5, r=5, t=40),
-            annotations=[
-                dict(
-                    text="Hover over nodes for details",
-                    showarrow=False,
-                    xref="paper",
-                    yref="paper",
-                    x=0.005,
-                    y=-0.002,
-                    xanchor="left",
-                    yanchor="bottom",
-                    font=dict(color="gray", size=12),
-                )
-            ],
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        ),
-    )
-
-    return fig
-
-
 # Main app
 st.title("🛀 Simply Estimate")
 st.markdown("Plan your projects with PERT analysis and critical path identification")
 
-# Section 1: Task Input
-st.header("📝 Section 1: Task Management")
+# Create two columns for side-by-side layout
+col_left, col_right = st.columns([1, 1])
 
-with st.expander("➕ Add New Task", expanded=True):
-    col1, col2 = st.columns(2)
+# Section 1: Task Input (Left Column)
+with col_left:
+    st.header("📝 Section 1: Task Management")
 
-    with col1:
-        task_name = st.text_input("Task Name*", key="task_name")
-        task_owner = st.text_input("Task Owner*", key="task_owner")
-        task_description = st.text_area("Task Description", key="task_description")
-        task_dod = st.text_area("Definition of Done", key="task_dod")
+    st.markdown(
+        "Enter all your project tasks in the table below. You can add or remove rows as needed."
+    )
 
-    with col2:
-        min_time = st.number_input(
+    # Initialize the data editor with sample data if no tasks exist
+    if not st.session_state.tasks:
+        initial_data = pd.DataFrame(
+            {
+                "Task ID": ["T001", "T002", "T003"],
+                "Task Name": ["Task 1", "Task 2", "Task 3"],
+                "Owner": ["John Doe", "Jane Smith", "Bob Johnson"],
+                "Description": [
+                    "Description for task 1",
+                    "Description for task 2",
+                    "Description for task 3",
+                ],
+                "Definition of Done": [
+                    "DOD for task 1",
+                    "DOD for task 2",
+                    "DOD for task 3",
+                ],
+                "Optimistic Time (days)": [1.0, 2.0, 1.5],
+                "Most Likely Time (days)": [3.0, 4.0, 3.5],
+                "Pessimistic Time (days)": [5.0, 6.0, 5.5],
+                "Dependencies": ["", "T001", ""],
+            }
+        )
+    else:
+        # Convert existing tasks to DataFrame for editing
+        initial_data = pd.DataFrame(
+            [
+                {
+                    "Task ID": task["task_id"],
+                    "Task Name": task["name"],
+                    "Owner": task["owner"],
+                    "Description": task["description"],
+                    "Definition of Done": task["definition_of_done"],
+                    "Optimistic Time (days)": task["min_time"],
+                    "Most Likely Time (days)": task["most_likely_time"],
+                    "Pessimistic Time (days)": task["max_time"],
+                    "Dependencies": task["dependencies"],
+                }
+                for task in st.session_state.tasks
+            ]
+        )
+
+    # Configure column types for the data editor
+    column_config = {
+        "Task ID": st.column_config.TextColumn(
+            "Task ID*",
+            required=True,
+            max_chars=10,
+            help="Unique identifier for the task (e.g., T001, T002)",
+        ),
+        "Task Name": st.column_config.TextColumn(
+            "Task Name*", required=True, max_chars=100
+        ),
+        "Owner": st.column_config.TextColumn("Owner*", required=True, max_chars=50),
+        "Description": st.column_config.TextColumn("Description", max_chars=200),
+        "Definition of Done": st.column_config.TextColumn(
+            "Definition of Done", max_chars=200
+        ),
+        "Optimistic Time (days)": st.column_config.NumberColumn(
             "Optimistic Time (days)*",
             min_value=0.1,
-            value=1.0,
+            max_value=1000.0,
             step=0.1,
-            key="min_time",
-        )
-        max_time = st.number_input(
-            "Pessimistic Time (days)*",
-            min_value=0.1,
-            value=5.0,
-            step=0.1,
-            key="max_time",
-        )
-        most_likely_time = st.number_input(
+            format="%.1f",
+            required=True,
+        ),
+        "Most Likely Time (days)": st.column_config.NumberColumn(
             "Most Likely Time (days)*",
             min_value=0.1,
-            value=3.0,
+            max_value=1000.0,
             step=0.1,
-            key="most_likely_time",
-        )
-        dependencies = st.text_input(
-            "Dependencies (comma-separated task names)", key="dependencies"
-        )
+            format="%.1f",
+            required=True,
+        ),
+        "Pessimistic Time (days)": st.column_config.NumberColumn(
+            "Pessimistic Time (days)*",
+            min_value=0.1,
+            max_value=1000.0,
+            step=0.1,
+            format="%.1f",
+            required=True,
+        ),
+        "Dependencies": st.column_config.TextColumn(
+            "Dependencies",
+            help="Comma-separated Task IDs that must be completed before this task (e.g., T001,T002)",
+            max_chars=200,
+        ),
+    }
 
-    if st.button("Add Task", type="primary"):
-        if task_name and task_owner and min_time and max_time and most_likely_time:
-            if max_time >= most_likely_time >= min_time:
-                new_task = {
-                    "name": task_name,
-                    "owner": task_owner,
-                    "description": task_description,
-                    "definition_of_done": task_dod,
-                    "min_time": min_time,
-                    "max_time": max_time,
-                    "most_likely_time": most_likely_time,
-                    "dependencies": dependencies,
+    # Data editor for tasks
+    edited_data = st.data_editor(
+        initial_data,
+        column_config=column_config,
+        num_rows="dynamic",
+        use_container_width=True,
+        key="tasks_editor",
+    )
+
+    button_col1, button_col2 = st.columns([1, 1])
+
+    with button_col1:
+        if st.button("💾 Save All Tasks", type="primary"):
+            # Validate and save tasks
+            valid_tasks = []
+            errors = []
+            task_ids = set()
+
+            for idx, row in edited_data.iterrows():
+                # Check required fields
+                if pd.isna(row["Task ID"]) or row["Task ID"].strip() == "":
+                    errors.append(f"Row {idx + 1}: Task ID is required")
+                    continue
+                if pd.isna(row["Task Name"]) or row["Task Name"].strip() == "":
+                    errors.append(f"Row {idx + 1}: Task Name is required")
+                    continue
+                if pd.isna(row["Owner"]) or row["Owner"].strip() == "":
+                    errors.append(f"Row {idx + 1}: Owner is required")
+                    continue
+                if (
+                    pd.isna(row["Optimistic Time (days)"])
+                    or pd.isna(row["Most Likely Time (days)"])
+                    or pd.isna(row["Pessimistic Time (days)"])
+                ):
+                    errors.append(f"Row {idx + 1}: All time estimates are required")
+                    continue
+
+                # Check for duplicate Task IDs
+                task_id = row["Task ID"].strip().upper()
+                if task_id in task_ids:
+                    errors.append(f"Row {idx + 1}: Task ID '{task_id}' is duplicated")
+                    continue
+                task_ids.add(task_id)
+
+                # Validate time estimates
+                opt_time = row["Optimistic Time (days)"]
+                likely_time = row["Most Likely Time (days)"]
+                pess_time = row["Pessimistic Time (days)"]
+
+                if not (opt_time <= likely_time <= pess_time):
+                    errors.append(
+                        f"Row {idx + 1}: Time estimates must satisfy Optimistic ≤ Most Likely ≤ Pessimistic"
+                    )
+                    continue
+
+                # Create task object
+                task = {
+                    "task_id": task_id,
+                    "name": row["Task Name"].strip(),
+                    "owner": row["Owner"].strip(),
+                    "description": (
+                        row["Description"] if pd.notna(row["Description"]) else ""
+                    ),
+                    "definition_of_done": (
+                        row["Definition of Done"]
+                        if pd.notna(row["Definition of Done"])
+                        else ""
+                    ),
+                    "min_time": opt_time,
+                    "most_likely_time": likely_time,
+                    "max_time": pess_time,
+                    "dependencies": (
+                        row["Dependencies"].strip().upper()
+                        if pd.notna(row["Dependencies"])
+                        else ""
+                    ),
                 }
-                st.session_state.tasks.append(new_task)
-                st.success(f"Task '{task_name}' added successfully!")
-                st.rerun()
-            else:
-                st.error("Please ensure: Optimistic ≤ Most Likely ≤ Pessimistic time")
-        else:
-            st.error("Please fill in all required fields (*)")
+                valid_tasks.append(task)
 
-# Display existing tasks
-if st.session_state.tasks:
-    st.subheader("📋 Current Tasks")
+            # Validate dependencies after all tasks are processed
+            if not errors:
+                all_task_ids = {task["task_id"] for task in valid_tasks}
+                for idx, task in enumerate(valid_tasks):
+                    if task["dependencies"]:
+                        deps = [
+                            dep.strip()
+                            for dep in task["dependencies"].split(",")
+                            if dep.strip()
+                        ]
+                        for dep in deps:
+                            if dep not in all_task_ids:
+                                errors.append(
+                                    f"Task {task['task_id']}: Dependency '{dep}' does not exist"
+                                )
 
-    tasks_df = pd.DataFrame(st.session_state.tasks)
-
-    # Add PERT calculations to the display
-    for i, task in enumerate(st.session_state.tasks):
-        expected_time, variance, std_dev = calculate_pert_estimates(
-            task["min_time"], task["max_time"], task["most_likely_time"]
-        )
-
-        with st.expander(
-            f"**{task['name']}** (Owner: {task['owner']}) - Expected: {expected_time:.1f} days"
-        ):
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                st.write(f"**Description:** {task['description']}")
-                st.write(f"**Definition of Done:** {task['definition_of_done']}")
-
-            with col2:
-                st.write(f"**Time Estimates:**")
-                st.write(f"- Optimistic: {task['min_time']} days")
-                st.write(f"- Most Likely: {task['most_likely_time']} days")
-                st.write(f"- Pessimistic: {task['max_time']} days")
-                st.write(f"- **Expected: {expected_time:.1f} days**")
-
-            with col3:
-                st.write(
-                    f"**Dependencies:** {task['dependencies'] if task['dependencies'] else 'None'}"
+            if errors:
+                st.error(
+                    "Please fix the following errors:\n"
+                    + "\n".join(f"• {error}" for error in errors)
                 )
-                st.write(f"**Standard Deviation:** {std_dev:.1f} days")
+            else:
+                st.session_state.tasks = valid_tasks
+                st.success(f"Successfully saved {len(valid_tasks)} tasks!")
+                st.rerun()
 
-                if st.button(f"Delete", key=f"delete_{i}"):
-                    st.session_state.tasks.pop(i)
-                    st.rerun()
+    with button_col2:
+        if st.session_state.tasks:
+            if st.button("🗑️ Clear All Tasks", type="secondary"):
+                st.session_state.tasks = []
+                st.rerun()
+
+# Section 2: Analysis (Right Column)
+with col_right:
 
     # Section 2: Analysis
     st.header("📊 Section 2: Project Analysis")
 
+    # Resource constraints toggle
+    st.subheader("⚙️ Resource Settings")
+    resource_constrained = st.checkbox(
+        "Enable Resource Constraints",
+        value=True,
+        help="When enabled, tasks with the same owner cannot run in parallel (realistic for single-person or limited teams)",
+    )
+
     if len(st.session_state.tasks) > 0:
-        critical_path, slack_times, project_duration = find_critical_path(tasks_df)
-
-        # Project Summary
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.metric("Total Tasks", len(st.session_state.tasks))
-
-        with col2:
-            st.metric("Project Duration", f"{project_duration:.1f} days")
-
-        with col3:
-            st.metric("Critical Path Length", len(critical_path))
+        tasks_df = pd.DataFrame(st.session_state.tasks)
+        critical_path, slack_times, project_duration = find_critical_path(
+            tasks_df, resource_constrained
+        )
 
         # Critical Path Analysis
         st.subheader("🎯 Critical Path Analysis")
 
         if critical_path:
-            st.success(f"**Critical Path:** {' → '.join(critical_path)}")
-            st.write(
-                "Tasks on the critical path have zero slack time and determine the project duration."
-            )
-
-            # Slack times table
-            st.subheader("⏱️ Task Slack Times")
-            slack_df = pd.DataFrame(
-                [
-                    {
-                        "Task": task,
-                        "Slack Time (days)": f"{slack:.1f}",
-                        "Status": "Critical" if slack < 0.001 else "Non-Critical",
-                    }
-                    for task, slack in slack_times.items()
-                ]
-            )
-            st.dataframe(slack_df, use_container_width=True)
+            # Create a mapping of task_id to task_name for better display
+            task_id_to_name = {
+                task["task_id"]: task["name"] for task in st.session_state.tasks
+            }
+            critical_path_display = [
+                f"{task_id} ({task_id_to_name[task_id]})" for task_id in critical_path
+            ]
+            st.success(f"**Critical Path:** {' → '.join(critical_path_display)}")
         else:
             st.warning(
                 "Could not determine critical path. Please check task dependencies."
             )
-
-        # Visualizations
-        st.subheader("📈 Project Visualizations")
-
-        tab1, tab2 = st.tabs(["Gantt Chart", "Dependency Network"])
-
-        with tab1:
-            gantt_fig = create_gantt_chart(tasks_df, critical_path)
-            st.plotly_chart(gantt_fig, use_container_width=True)
-            st.caption(
-                "Red bars indicate critical path tasks, blue bars indicate non-critical tasks."
-            )
-
-        with tab2:
-            network_fig = create_network_graph(tasks_df)
-            st.plotly_chart(network_fig, use_container_width=True)
-            st.caption("Network diagram showing task dependencies and relationships.")
 
         # PERT Analysis Summary
         st.subheader("📊 PERT Analysis Summary")
@@ -424,23 +402,90 @@ if st.session_state.tasks:
                     task["min_time"], task["max_time"], task["most_likely_time"]
                 )[1]
                 for task in st.session_state.tasks
-                if task["name"] in critical_path
+                if task["task_id"] in critical_path
             ]
         )
 
         project_std_dev = np.sqrt(total_variance)
 
+        # Calculate comparison with unlimited resources
+        if resource_constrained:
+            _, _, unlimited_duration = find_critical_path(
+                tasks_df, resource_constrained=False
+            )
+            time_difference = project_duration - unlimited_duration
+        else:
+            unlimited_duration = project_duration
+            time_difference = 0
+
         col1, col2 = st.columns(2)
 
         with col1:
-            st.metric("Sum of All Task Times", f"{total_expected:.1f} days")
-            st.metric("Critical Path Duration", f"{project_duration:.1f} days")
+            st.metric(
+                "Total Work Effort",
+                f"{total_expected:.1f} days",
+                help="Sum of all individual task durations",
+            )
+            st.metric("Actual Project Duration", f"{project_duration:.1f} days")
 
         with col2:
             st.metric("Project Standard Deviation", f"{project_std_dev:.1f} days")
-            st.metric(
-                "68% Confidence Range",
-                f"{project_duration - project_std_dev:.1f} - {project_duration + project_std_dev:.1f} days",
+            if resource_constrained:
+                st.metric(
+                    "Resource Impact",
+                    (
+                        f"+{time_difference:.1f} days"
+                        if time_difference > 0
+                        else f"{time_difference:.1f} days"
+                    ),
+                    help="Additional time due to resource constraints vs unlimited resources",
+                )
+            else:
+                st.metric(
+                    "68% Confidence Range",
+                    f"{project_duration - project_std_dev:.1f} - {project_duration + project_std_dev:.1f} days",
+                )
+
+        # Explain the difference between the metrics
+        if resource_constrained:
+            if time_difference > 0:
+                st.info(
+                    f"📋 **Resource-Constrained Scheduling**: Tasks with the same owner are scheduled sequentially. "
+                    f"This adds **{time_difference:.1f} days** compared to unlimited resources scenario."
+                )
+            else:
+                st.info(
+                    "📋 **Resource-Constrained Scheduling**: Tasks with the same owner are scheduled sequentially. "
+                    "No additional time needed as tasks don't conflict."
+                )
+
+            # Show breakdown by owner
+            if time_difference > 0:
+                st.subheader("👥 Resource Utilization")
+                owner_breakdown = {}
+                for task in st.session_state.tasks:
+                    owner = task["owner"]
+                    expected_time, _, _ = calculate_pert_estimates(
+                        task["min_time"], task["max_time"], task["most_likely_time"]
+                    )
+                    if owner not in owner_breakdown:
+                        owner_breakdown[owner] = {"tasks": 0, "total_time": 0}
+                    owner_breakdown[owner]["tasks"] += 1
+                    owner_breakdown[owner]["total_time"] += expected_time
+
+                for owner, info in owner_breakdown.items():
+                    if info["tasks"] > 1:
+                        st.write(
+                            f"**{owner}**: {info['tasks']} tasks, {info['total_time']:.1f} days total work"
+                        )
+                    else:
+                        st.write(
+                            f"**{owner}**: {info['tasks']} task, {info['total_time']:.1f} days"
+                        )
+        else:
+            st.warning(
+                "⚠️ **Unlimited Resources Mode**: All tasks without dependencies start simultaneously, "
+                "assuming unlimited resources are available."
             )
 
         # Export functionality
@@ -453,11 +498,12 @@ if st.session_state.tasks:
                 expected_time, variance, std_dev = calculate_pert_estimates(
                     task["min_time"], task["max_time"], task["most_likely_time"]
                 )
-                slack = slack_times.get(task["name"], 0)
-                is_critical = task["name"] in critical_path
+                slack = slack_times.get(task["task_id"], 0)
+                is_critical = task["task_id"] in critical_path
 
                 export_data.append(
                     {
+                        "Task ID": task["task_id"],
                         "Task Name": task["name"],
                         "Owner": task["owner"],
                         "Description": task["description"],
@@ -483,13 +529,3 @@ if st.session_state.tasks:
             )
     else:
         st.info("Add some tasks above to see the project analysis!")
-
-else:
-    st.info("👆 Start by adding your first task above!")
-
-# Clear all tasks button
-if st.session_state.tasks:
-    if st.button("🗑️ Clear All Tasks", type="secondary"):
-        st.session_state.tasks = []
-        st.rerun()
-        st.rerun()
