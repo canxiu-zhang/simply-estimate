@@ -1,6 +1,7 @@
 import math
 from datetime import datetime, timedelta
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -124,21 +125,23 @@ def calculate_project_timeline(tasks_df, topo_order):
     return timeline
 
 
-def create_gantt_chart(timeline, project_name):
+def create_gantt_chart(timeline, project_name, start_date=None):
     """Create Gantt chart visualization"""
     # Prepare data for Gantt chart
     gantt_data = []
-    base_date = datetime.now().date()  # Use current date as project start
+    base_date = (
+        start_date if start_date else datetime.now().date()
+    )  # Use provided start date or current date
 
     for task_id, info in timeline.items():
-        start_date = base_date + timedelta(days=info["start_time"])
-        end_date = base_date + timedelta(days=info["end_time"])
+        start_date_calc = add_business_days(base_date, info["start_time"])
+        end_date_calc = add_business_days(base_date, info["end_time"])
 
         gantt_data.append(
             {
                 "Task": f"{task_id}: {info['task'][:30]}...",
-                "Start": start_date,
-                "Finish": end_date,
+                "Start": start_date_calc,
+                "Finish": end_date_calc,
                 "Owner": info["owner"],
                 "Duration": info["duration"],
             }
@@ -166,24 +169,68 @@ def create_gantt_chart(timeline, project_name):
     return fig
 
 
-def create_dependency_graph(tasks_df, G):
-    """Create dependency graph visualization"""
+def create_dependency_graph(tasks_df, G, critical_path=None):
+    """Create dependency graph visualization with optional critical path highlighting"""
     # Set up the plot
     fig, ax = plt.subplots(figsize=(12, 8))
 
     # Calculate layout
     pos = nx.spring_layout(G, k=3, iterations=50)
 
+    # Define node colors
+    node_colors = []
+    for node in G.nodes():
+        if critical_path and node in critical_path:
+            node_colors.append("red")  # Critical path nodes in red
+        else:
+            node_colors.append("lightblue")  # Regular nodes in light blue
+
     # Draw nodes
     nx.draw_networkx_nodes(
-        G, pos, node_color="lightblue", node_size=1500, alpha=0.7, ax=ax
+        G, pos, node_color=node_colors, node_size=1500, alpha=0.7, ax=ax
     )
 
+    # Define edge colors
+    edge_colors = []
+    edge_widths = []
+    if critical_path:
+        for edge in G.edges():
+            # Check if this edge is part of the critical path
+            if (
+                edge[0] in critical_path
+                and edge[1] in critical_path
+                and critical_path.index(edge[1]) == critical_path.index(edge[0]) + 1
+            ):
+                edge_colors.append("red")
+                edge_widths.append(3.0)
+            else:
+                edge_colors.append("gray")
+                edge_widths.append(1.0)
+    else:
+        edge_colors = ["gray"] * len(G.edges())
+        edge_widths = [1.0] * len(G.edges())
+
     # Draw edges
-    nx.draw_networkx_edges(G, pos, edge_color="gray", arrows=True, arrowsize=20, ax=ax)
+    nx.draw_networkx_edges(
+        G,
+        pos,
+        edge_color=edge_colors,
+        arrows=True,
+        arrowsize=20,
+        width=edge_widths,
+        ax=ax,
+    )
 
     # Draw labels
     nx.draw_networkx_labels(G, pos, font_size=10, font_weight="bold", ax=ax)
+
+    # Add legend if critical path exists
+    if critical_path:
+        legend_elements = [
+            mpatches.Patch(facecolor="red", alpha=0.7, label="Critical Path"),
+            mpatches.Patch(facecolor="lightblue", alpha=0.7, label="Regular Tasks"),
+        ]
+        ax.legend(handles=legend_elements, loc="upper right")
 
     ax.set_title("Task Dependencies Graph", fontsize=16, fontweight="bold")
     ax.axis("off")
@@ -240,10 +287,71 @@ def calculate_confidence_intervals(timeline):
     return confidence_intervals, project_end, total_std_dev
 
 
+def calculate_critical_path(timeline, G):
+    """Calculate the critical path through the project"""
+    # Find the task that ends last (project end)
+    project_end_time = max(info["end_time"] for info in timeline.values())
+    end_tasks = [
+        task_id
+        for task_id, info in timeline.items()
+        if info["end_time"] == project_end_time
+    ]
+
+    critical_path = []
+    critical_path_duration = 0
+
+    # For each potential end task, trace back to find the longest path
+    for end_task in end_tasks:
+        path = []
+        current_task = end_task
+        path_duration = 0
+
+        # Trace back through dependencies to find the longest path
+        while current_task:
+            path.insert(0, current_task)
+            path_duration += timeline[current_task]["duration"]
+
+            # Find the predecessor that ends latest (on critical path)
+            predecessors = [edge[0] for edge in G.edges() if edge[1] == current_task]
+            if not predecessors:
+                break
+
+            # Among predecessors, find the one that ends latest
+            latest_end = -1
+            next_task = None
+            for pred in predecessors:
+                if timeline[pred]["end_time"] > latest_end:
+                    latest_end = timeline[pred]["end_time"]
+                    next_task = pred
+
+            current_task = next_task
+
+        # Keep the longest path as critical path
+        if path_duration > critical_path_duration:
+            critical_path = path
+            critical_path_duration = path_duration
+
+    return critical_path, critical_path_duration
+
+
+def add_business_days(start_date, business_days):
+    """Add business days to a start date, skipping weekends (Saturday=5, Sunday=6)"""
+    current_date = start_date
+    days_added = 0
+
+    while days_added < business_days:
+        current_date += timedelta(days=1)
+        # Skip weekends (Monday=0, Sunday=6)
+        if current_date.weekday() < 5:  # Monday to Friday
+            days_added += 1
+
+    return current_date
+
+
 def main():
-    st.title("📊 Simply Estimate - Project Planning Tool")
+    st.title("📊 Simply Estimate")
     st.markdown(
-        "*Using PERT (Program Evaluation And Review Technique) and CPM (Critical Path Method)*"
+        "*Using PERT (Program Evaluation And Review Technique) and CPM (Critical Path Method) to plan projects.*"
     )
 
     # Sidebar for file upload
@@ -309,162 +417,258 @@ def main():
             projects = df["Project"].unique()
 
             for project in projects:
-                st.header(f"🎯 Project: {project}")
+                with st.expander(f"🎯 Project: {project}", expanded=False):
+                    # Filter data for current project
+                    project_df = df[df["Project"] == project].copy()
 
-                # Filter data for current project
-                project_df = df[df["Project"] == project].copy()
+                    # Perform topological sort
+                    topo_order, G = topological_sort(project_df)
+                    if topo_order is None:
+                        continue  # Calculate project timeline
+                    timeline = calculate_project_timeline(project_df, topo_order)
 
-                # Perform topological sort
-                topo_order, G = topological_sort(project_df)
-                if topo_order is None:
-                    continue
+                    # Add debug information
+                    with st.expander("🔍 Debug Information"):
+                        st.write("**Task Order (Topological Sort):**")
+                        st.write(topo_order)
 
-                # Calculate project timeline
-                timeline = calculate_project_timeline(project_df, topo_order)
+                        st.write("**Dependencies:**")
+                        for _, row in project_df.iterrows():
+                            deps = parse_dependencies(row["Dependency"])
+                            if deps:
+                                st.write(f"Task {row['Task ID']}: depends on {deps}")
 
-                # Add debug information
-                with st.expander("🔍 Debug Information"):
-                    st.write("**Task Order (Topological Sort):**")
-                    st.write(topo_order)
+                        st.write("**Timeline Calculation:**")
+                        for task_id, info in timeline.items():
+                            st.write(
+                                f"Task {task_id}: Start={info['start_time']:.1f}, End={info['end_time']:.1f}, Duration={info['duration']:.1f}"
+                            )
 
-                    st.write("**Dependencies:**")
-                    for _, row in project_df.iterrows():
-                        deps = parse_dependencies(row["Dependency"])
-                        if deps:
-                            st.write(f"Task {row['Task ID']}: depends on {deps}")
+                    # Create tabs for different views
+                    tab1, tab2, tab3, tab4 = st.tabs(
+                        ["📈 Analysis", "📊 Timeline", "🔗 Dependencies", "👥 Workload"]
+                    )
 
-                    st.write("**Timeline Calculation:**")
-                    for task_id, info in timeline.items():
+                    with tab1:
+                        st.subheader("Project Analysis")
+
+                        # Calculate confidence intervals
+                        confidence_intervals, project_end, total_std_dev = (
+                            calculate_confidence_intervals(timeline)
+                        )
+
+                        # Display metrics
+                        col1, col2, col3 = st.columns(3)
+
+                        with col1:
+                            st.metric(
+                                "Expected Duration", f"{project_end:.1f} business days"
+                            )
+
+                        with col2:
+                            st.metric(
+                                "Standard Deviation",
+                                f"{total_std_dev:.1f} business days",
+                            )
+
+                        with col3:
+                            st.metric("Total Tasks", len(timeline))
+
+                        # Confidence intervals
+                        st.subheader("Confidence Intervals")
+                        ci_data = []
+                        for level, (lower, upper) in confidence_intervals.items():
+                            ci_data.append(
+                                {
+                                    "Confidence Level": level.replace("_", " ").upper(),
+                                    "Lower Bound": f"{lower:.1f} business days",
+                                    "Upper Bound": f"{upper:.1f} business days",
+                                    "Range": f"{upper - lower:.1f} business days",
+                                }
+                            )
+
+                        ci_df = pd.DataFrame(ci_data)
+                        st.dataframe(ci_df)
+
+                        # Risk analysis
+                        st.subheader("Risk Analysis")
+                        st.write("**Interpretation:**")
                         st.write(
-                            f"Task {task_id}: Start={info['start_time']:.1f}, End={info['end_time']:.1f}, Duration={info['duration']:.1f}"
+                            "- **68% confidence**: Project will complete between {:.1f} and {:.1f} business days".format(
+                                confidence_intervals["1_sd"][0],
+                                confidence_intervals["1_sd"][1],
+                            )
+                        )
+                        st.write(
+                            "- **95% confidence**: Project will complete between {:.1f} and {:.1f} business days".format(
+                                confidence_intervals["2_sd"][0],
+                                confidence_intervals["2_sd"][1],
+                            )
+                        )
+                        st.write(
+                            "- **99.7% confidence**: Project will complete between {:.1f} and {:.1f} business days".format(
+                                confidence_intervals["3_sd"][0],
+                                confidence_intervals["3_sd"][1],
+                            )
                         )
 
-                # Create tabs for different views
-                tab1, tab2, tab3, tab4 = st.tabs(
-                    ["📊 Timeline", "🔗 Dependencies", "👥 Workload", "📈 Analysis"]
-                )
-
-                with tab1:
-                    st.subheader("Gantt Chart")
-                    gantt_fig = create_gantt_chart(timeline, project)
-                    st.plotly_chart(gantt_fig, use_container_width=True)
-
-                    # Project summary
-                    project_end = max(info["end_time"] for info in timeline.values())
-                    st.metric("Project Duration", f"{project_end:.1f} days")
-
-                with tab2:
-                    st.subheader("Task Dependencies")
-                    if len(G.edges()) > 0:
-                        dep_fig = create_dependency_graph(project_df, G)
-                        st.pyplot(dep_fig)
-                    else:
-                        st.info("No dependencies found for this project.")
-
-                with tab3:
-                    st.subheader("Workload Distribution")
-                    workload_data = analyze_workload(timeline)
-
-                    # Create workload chart
-                    workload_df = pd.DataFrame(
-                        [
-                            {
-                                "Owner": owner,
-                                "Total Tasks": data["total_tasks"],
-                                "Total Duration": data["total_duration"],
-                            }
-                            for owner, data in workload_data.items()
-                        ]
-                    )
-
-                    col1, col2 = st.columns(2)
-
-                    with col1:
-                        fig_tasks = px.bar(
-                            workload_df,
-                            x="Owner",
-                            y="Total Tasks",
-                            title="Number of Tasks per Person",
+                        # Critical path analysis
+                        st.subheader("Critical Path Analysis")
+                        critical_path, critical_path_duration = calculate_critical_path(
+                            timeline, G
                         )
-                        st.plotly_chart(fig_tasks, use_container_width=True)
 
-                    with col2:
-                        fig_duration = px.bar(
-                            workload_df,
-                            x="Owner",
-                            y="Total Duration",
-                            title="Total Duration per Person (days)",
+                        st.write("**Critical Path:**")
+                        st.write(" ➜ ".join(critical_path))
+
+                        st.write(
+                            f"**Critical Path Duration:** {critical_path_duration:.1f} business days"
                         )
-                        st.plotly_chart(fig_duration, use_container_width=True)
 
-                    # Detailed workload breakdown
-                    st.subheader("Detailed Workload Breakdown")
-                    for owner, data in workload_data.items():
-                        with st.expander(
-                            f"{owner} - {data['total_tasks']} tasks, {data['total_duration']:.1f} days"
-                        ):
-                            for task in data["tasks"]:
-                                st.write(
-                                    f"**{task['task_id']}**: {task['task']} ({task['duration']:.1f} days)"
+                    with tab2:
+                        st.subheader("Gantt Chart")
+
+                        # Add date picker for project start date
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            start_date = st.date_input(
+                                "Project Start Date",
+                                value=datetime.now().date(),
+                                help="Select the date when the project will begin",
+                                key=f"start_date_{project}",
+                            )
+
+                        gantt_fig = create_gantt_chart(timeline, project, start_date)
+                        st.plotly_chart(gantt_fig, use_container_width=True)
+
+                        # Project summary
+                        project_end = max(
+                            info["end_time"] for info in timeline.values()
+                        )
+                        with col2:
+                            st.metric(
+                                "Project Duration", f"{project_end:.1f} business days"
+                            )
+                            # Calculate and display project end date (business days only)
+                            end_date = add_business_days(start_date, project_end)
+                            st.metric("Project End Date", end_date.strftime("%Y-%m-%d"))
+
+                            # Also show calendar days for reference
+                            calendar_days = (end_date - start_date).days
+                            st.metric("Calendar Days", f"{calendar_days} days")
+
+                    with tab3:
+                        st.subheader("Task Dependencies")
+                        if len(G.edges()) > 0:
+                            # Calculate critical path first
+                            critical_path, critical_path_duration = (
+                                calculate_critical_path(timeline, G)
+                            )
+
+                            # Create dependency graph with critical path highlighting
+                            dep_fig = create_dependency_graph(
+                                project_df, G, critical_path
+                            )
+                            st.pyplot(dep_fig)
+
+                            # Display critical path analysis
+                            st.subheader("🎯 Critical Path Analysis")
+
+                            if critical_path:
+                                st.write("**Critical Path:**")
+                                path_text = " → ".join(
+                                    [
+                                        f"{task_id} ({timeline[task_id]['task'][:20]}...)"
+                                        for task_id in critical_path
+                                    ]
                                 )
+                                st.write(path_text)
 
-                with tab4:
-                    st.subheader("Project Analysis")
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.metric(
+                                        "Critical Path Duration",
+                                        f"{critical_path_duration:.1f} business days",
+                                    )
+                                with col2:
+                                    st.metric(
+                                        "Number of Critical Tasks", len(critical_path)
+                                    )
 
-                    # Calculate confidence intervals
-                    confidence_intervals, project_end, total_std_dev = (
-                        calculate_confidence_intervals(timeline)
-                    )
+                                # Show critical path details in a table
+                                st.subheader("Critical Path Task Details")
+                                critical_path_data = []
+                                for i, task_id in enumerate(critical_path):
+                                    task_info = timeline[task_id]
+                                    critical_path_data.append(
+                                        {
+                                            "Sequence": i + 1,
+                                            "Task ID": task_id,
+                                            "Task": task_info["task"],
+                                            "Owner": task_info["owner"],
+                                            "Duration": f"{task_info['duration']:.1f} business days",
+                                            "Start": f"{task_info['start_time']:.1f}",
+                                            "End": f"{task_info['end_time']:.1f}",
+                                        }
+                                    )
 
-                    # Display metrics
-                    col1, col2, col3 = st.columns(3)
+                                critical_df = pd.DataFrame(critical_path_data)
+                                st.dataframe(critical_df, use_container_width=True)
 
-                    with col1:
-                        st.metric("Expected Duration", f"{project_end:.1f} days")
+                                st.info(
+                                    "💡 **Critical Path**: These tasks directly impact the project completion date. Any delay in these tasks will delay the entire project."
+                                )
+                            else:
+                                st.warning("Could not determine critical path.")
+                        else:
+                            st.info("No dependencies found for this project.")
 
-                    with col2:
-                        st.metric("Standard Deviation", f"{total_std_dev:.1f} days")
+                    with tab4:
+                        st.subheader("Workload Distribution")
+                        workload_data = analyze_workload(timeline)
 
-                    with col3:
-                        st.metric("Total Tasks", len(timeline))
-
-                    # Confidence intervals
-                    st.subheader("Confidence Intervals")
-                    ci_data = []
-                    for level, (lower, upper) in confidence_intervals.items():
-                        ci_data.append(
-                            {
-                                "Confidence Level": level.replace("_", " ").upper(),
-                                "Lower Bound": f"{lower:.1f} days",
-                                "Upper Bound": f"{upper:.1f} days",
-                                "Range": f"{upper - lower:.1f} days",
-                            }
+                        # Create workload chart
+                        workload_df = pd.DataFrame(
+                            [
+                                {
+                                    "Owner": owner,
+                                    "Total Tasks": data["total_tasks"],
+                                    "Total Duration": data["total_duration"],
+                                }
+                                for owner, data in workload_data.items()
+                            ]
                         )
 
-                    ci_df = pd.DataFrame(ci_data)
-                    st.dataframe(ci_df)
+                        col1, col2 = st.columns(2)
 
-                    # Risk analysis
-                    st.subheader("Risk Analysis")
-                    st.write("**Interpretation:**")
-                    st.write(
-                        "- **68% confidence**: Project will complete between {:.1f} and {:.1f} days".format(
-                            confidence_intervals["1_sd"][0],
-                            confidence_intervals["1_sd"][1],
-                        )
-                    )
-                    st.write(
-                        "- **95% confidence**: Project will complete between {:.1f} and {:.1f} days".format(
-                            confidence_intervals["2_sd"][0],
-                            confidence_intervals["2_sd"][1],
-                        )
-                    )
-                    st.write(
-                        "- **99.7% confidence**: Project will complete between {:.1f} and {:.1f} days".format(
-                            confidence_intervals["3_sd"][0],
-                            confidence_intervals["3_sd"][1],
-                        )
-                    )
+                        with col1:
+                            fig_tasks = px.bar(
+                                workload_df,
+                                x="Owner",
+                                y="Total Tasks",
+                                title="Number of Tasks per Person",
+                            )
+                            st.plotly_chart(fig_tasks, use_container_width=True)
+
+                        with col2:
+                            fig_duration = px.bar(
+                                workload_df,
+                                x="Owner",
+                                y="Total Duration",
+                                title="Total Duration per Person (business days)",
+                            )
+                            st.plotly_chart(fig_duration, use_container_width=True)
+
+                        # Detailed workload breakdown
+                        st.subheader("Detailed Workload Breakdown")
+                        for owner, data in workload_data.items():
+                            with st.expander(
+                                f"{owner} - {data['total_tasks']} tasks, {data['total_duration']:.1f} business days"
+                            ):
+                                for task in data["tasks"]:
+                                    st.write(
+                                        f"**{task['task_id']}**: {task['task']} ({task['duration']:.1f} business days)"
+                                    )
 
         except Exception as e:
             st.error(f"Error processing file: {str(e)}")
@@ -513,11 +717,11 @@ def main():
         - **DoD**: Definition of Done
         - **Dependency**: Task IDs that must be completed before this task (comma-separated for multiple dependencies)
         - **Owner**: Person responsible for the task
-        - **Optimistic**: Best-case estimate (in days)
-        - **Nominal**: Most likely estimate (in days)
-        - **Pessimistic**: Worst-case estimate (in days)
+        - **Optimistic**: Best-case estimate (in business days)
+        - **Nominal**: Most likely estimate (in business days)
+        - **Pessimistic**: Worst-case estimate (in business days)
         
-        *Note: The app will automatically calculate Expected time, Standard Deviation, and confidence intervals using PERT formulas.*
+        *Note: The app will automatically calculate Expected time, Standard Deviation, and confidence intervals using PERT formulas. All durations are in business days (weekends are excluded from calculations).*
         """
         )
 
