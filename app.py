@@ -1,531 +1,526 @@
+import math
 from datetime import datetime, timedelta
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="simply-estimate", page_icon=":rocket:", layout="wide")
-
-# Initialize session state for tasks
-if "tasks" not in st.session_state:
-    st.session_state.tasks = []
+# Set page config
+st.set_page_config(page_title="Simply Estimate", page_icon="📊", layout="wide")
 
 
-def calculate_pert_estimates(optimistic, pessimistic, most_likely):
-    """Calculate PERT estimates using the formula: (O + 4M + P) / 6"""
-    expected_time = (optimistic + 4 * most_likely + pessimistic) / 6
-    variance = ((pessimistic - optimistic) / 6) ** 2
-    std_dev = np.sqrt(variance)
-    return expected_time, variance, std_dev
+def parse_dependencies(dependency_str):
+    """Parse dependency string and return list of task IDs"""
+    if (
+        pd.isna(dependency_str)
+        or dependency_str == ""
+        or str(dependency_str).strip() == ""
+    ):
+        return []
+    # Handle both string and numeric task IDs, ensure they're converted to strings
+    deps = [
+        str(dep).strip() for dep in str(dependency_str).split(",") if str(dep).strip()
+    ]
+    return deps
 
 
-def find_critical_path(tasks_df, resource_constrained=True):
-    """Find the critical path using network analysis with optional resource constraints"""
-    if tasks_df.empty:
-        return [], {}, 0
+def calculate_pert_estimates(optimistic, nominal, pessimistic):
+    """Calculate PERT estimates (Expected time and Standard Deviation)"""
+    expected = (optimistic + 4 * nominal + pessimistic) / 6
+    std_dev = (pessimistic - optimistic) / 6
+    return expected, std_dev
 
+
+def topological_sort(tasks_df):
+    """Perform topological sort to determine task execution order"""
     # Create a directed graph
     G = nx.DiGraph()
 
-    # Add nodes with expected times and owner information
-    for _, task in tasks_df.iterrows():
-        expected_time, _, _ = calculate_pert_estimates(
-            task["min_time"], task["max_time"], task["most_likely_time"]
-        )
-        G.add_node(
-            task["task_id"],
-            duration=expected_time,
-            name=task["name"],
-            owner=task["owner"],
-        )
+    # Convert Task ID column to string to ensure consistency
+    tasks_df["Task ID"] = tasks_df["Task ID"].astype(str)
 
-    # Add edges based on dependencies
-    for _, task in tasks_df.iterrows():
-        if task["dependencies"]:
-            deps = [
-                dep.strip() for dep in task["dependencies"].split(",") if dep.strip()
-            ]
-            for dep in deps:
-                if dep in [t["task_id"] for _, t in tasks_df.iterrows()]:
-                    G.add_edge(dep, task["task_id"])
+    # Add all tasks as nodes
+    for task_id in tasks_df["Task ID"]:
+        G.add_node(str(task_id))
 
-    # Add resource constraints: tasks with same owner cannot run in parallel
-    if resource_constrained:
-        tasks_by_owner = {}
-        for _, task in tasks_df.iterrows():
-            owner = task["owner"]
-            if owner not in tasks_by_owner:
-                tasks_by_owner[owner] = []
-            tasks_by_owner[owner].append(task["task_id"])
+    # Add edges for dependencies
+    for _, row in tasks_df.iterrows():
+        dependencies = parse_dependencies(row["Dependency"])
+        for dep in dependencies:
+            dep_str = str(dep).strip()
+            task_id_str = str(row["Task ID"]).strip()
+            if dep_str in tasks_df["Task ID"].values:
+                G.add_edge(dep_str, task_id_str)
 
-        # For each owner, add dependencies between tasks that have no explicit dependencies
-        for owner, task_ids in tasks_by_owner.items():
-            if len(task_ids) > 1:
-                # Get tasks for this owner that have no dependencies
-                independent_tasks = []
-                for task_id in task_ids:
-                    if not list(G.predecessors(task_id)):  # No predecessors
-                        independent_tasks.append(task_id)
+    # Check for cycles
+    if not nx.is_directed_acyclic_graph(G):
+        st.error("Circular dependencies detected! Please check your task dependencies.")
+        return None, None
 
-                # Create a chain of independent tasks for the same owner
-                for i in range(len(independent_tasks) - 1):
-                    G.add_edge(independent_tasks[i], independent_tasks[i + 1])
-
+    # Get topological order
     try:
-        # Calculate earliest start and finish times
-        earliest_start = {}
-        earliest_finish = {}
-
-        # Topological sort to process nodes in correct order
-        for node in nx.topological_sort(G):
-            duration = G.nodes[node]["duration"]
-
-            # Find maximum earliest finish of predecessors
-            predecessors = list(G.predecessors(node))
-            if not predecessors:
-                earliest_start[node] = 0
-            else:
-                earliest_start[node] = max(
-                    earliest_finish[pred] for pred in predecessors
-                )
-
-            earliest_finish[node] = earliest_start[node] + duration
-
-        # Calculate latest start and finish times (backward pass)
-        latest_start = {}
-        latest_finish = {}
-
-        # Project completion time
-        project_duration = max(earliest_finish.values()) if earliest_finish else 0
-
-        # Initialize latest finish times for all end nodes
-        for node in G.nodes():
-            successors = list(G.successors(node))
-            if not successors:  # End nodes
-                latest_finish[node] = project_duration
-
-        # Work backwards
-        for node in reversed(list(nx.topological_sort(G))):
-            duration = G.nodes[node]["duration"]
-            successors = list(G.successors(node))
-
-            if not successors:
-                latest_finish[node] = project_duration
-            else:
-                latest_finish[node] = min(latest_start[succ] for succ in successors)
-
-            latest_start[node] = latest_finish[node] - duration
-
-        # Find critical path (nodes with zero slack)
-        critical_nodes = []
-        slack_times = {}
-        for node in G.nodes():
-            slack = latest_start[node] - earliest_start[node]
-            slack_times[node] = slack
-            if abs(slack) < 0.001:  # Account for floating point precision
-                critical_nodes.append(node)
-
-        return critical_nodes, slack_times, project_duration
-
-    except:
-        return [], {}, 0
+        topo_order = list(nx.topological_sort(G))
+        return topo_order, G
+    except nx.NetworkXError:
+        st.error("Error in dependency analysis. Please check your task dependencies.")
+        return None, None
 
 
-# Main app
-st.title("🛀 Simply Estimate")
-st.markdown("Plan your projects with PERT analysis and critical path identification")
+def calculate_project_timeline(tasks_df, topo_order):
+    """Calculate project timeline considering dependencies and resource constraints"""
+    # Create timeline dictionary
+    timeline = {}
+    resource_schedule = {}  # Track when each person is available
 
-# Create two columns for side-by-side layout
-col_left, col_right = st.columns([1, 1])
+    # Convert Task ID column to string to ensure consistency
+    tasks_df["Task ID"] = tasks_df["Task ID"].astype(str)
 
-# Section 1: Task Input (Left Column)
-with col_left:
-    st.header("📝 Section 1: Task Management")
+    for task_id in topo_order:
+        task = tasks_df[tasks_df["Task ID"] == str(task_id)].iloc[0]
 
-    st.markdown(
-        "Enter all your project tasks in the table below. You can add or remove rows as needed."
-    )
+        # Get dependencies
+        dependencies = parse_dependencies(task["Dependency"])
 
-    # Initialize the data editor with sample data if no tasks exist
-    if not st.session_state.tasks:
-        initial_data = pd.DataFrame(
+        # Calculate earliest start time based on dependencies
+        earliest_start = 0
+        for dep in dependencies:
+            dep_str = str(dep).strip()
+            if dep_str in timeline:
+                earliest_start = max(earliest_start, timeline[dep_str]["end_time"])
+
+        # Check resource availability
+        owner = task["Owner"]
+        if owner in resource_schedule:
+            earliest_start = max(earliest_start, resource_schedule[owner])
+
+        # Calculate task duration (using expected time)
+        duration = task["Expected"]
+
+        # Set start and end times
+        start_time = earliest_start
+        end_time = start_time + duration
+
+        timeline[str(task_id)] = {
+            "task": task["Task"],
+            "owner": owner,
+            "start_time": start_time,
+            "end_time": end_time,
+            "duration": duration,
+            "optimistic": task["Optimistic"],
+            "nominal": task["Nominal"],
+            "pessimistic": task["Pessimistic"],
+            "expected": task["Expected"],
+            "std_dev": task["Standard Deviation"],
+        }
+
+        # Update resource schedule
+        resource_schedule[owner] = end_time
+
+    return timeline
+
+
+def create_gantt_chart(timeline, project_name):
+    """Create Gantt chart visualization"""
+    # Prepare data for Gantt chart
+    gantt_data = []
+    base_date = datetime.now().date()  # Use current date as project start
+
+    for task_id, info in timeline.items():
+        start_date = base_date + timedelta(days=info["start_time"])
+        end_date = base_date + timedelta(days=info["end_time"])
+
+        gantt_data.append(
             {
-                "Task ID": ["T001", "T002", "T003"],
-                "Task Name": ["Task 1", "Task 2", "Task 3"],
-                "Owner": ["John Doe", "Jane Smith", "Bob Johnson"],
-                "Description": [
-                    "Description for task 1",
-                    "Description for task 2",
-                    "Description for task 3",
-                ],
-                "Definition of Done": [
-                    "DOD for task 1",
-                    "DOD for task 2",
-                    "DOD for task 3",
-                ],
-                "Optimistic Time (days)": [1.0, 2.0, 1.5],
-                "Most Likely Time (days)": [3.0, 4.0, 3.5],
-                "Pessimistic Time (days)": [5.0, 6.0, 5.5],
-                "Dependencies": ["", "T001", ""],
+                "Task": f"{task_id}: {info['task'][:30]}...",
+                "Start": start_date,
+                "Finish": end_date,
+                "Owner": info["owner"],
+                "Duration": info["duration"],
             }
         )
-    else:
-        # Convert existing tasks to DataFrame for editing
-        initial_data = pd.DataFrame(
-            [
-                {
-                    "Task ID": task["task_id"],
-                    "Task Name": task["name"],
-                    "Owner": task["owner"],
-                    "Description": task["description"],
-                    "Definition of Done": task["definition_of_done"],
-                    "Optimistic Time (days)": task["min_time"],
-                    "Most Likely Time (days)": task["most_likely_time"],
-                    "Pessimistic Time (days)": task["max_time"],
-                    "Dependencies": task["dependencies"],
-                }
-                for task in st.session_state.tasks
-            ]
+
+    gantt_df = pd.DataFrame(gantt_data)
+
+    # Create Gantt chart
+    fig = px.timeline(
+        gantt_df,
+        x_start="Start",
+        x_end="Finish",
+        y="Task",
+        color="Owner",
+        title=f"Project Timeline - {project_name}",
+    )
+
+    fig.update_layout(
+        xaxis_title="Time (days)",
+        yaxis_title="Tasks",
+        height=max(400, len(gantt_data) * 30),
+        showlegend=True,
+    )
+
+    return fig
+
+
+def create_dependency_graph(tasks_df, G):
+    """Create dependency graph visualization"""
+    # Set up the plot
+    fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Calculate layout
+    pos = nx.spring_layout(G, k=3, iterations=50)
+
+    # Draw nodes
+    nx.draw_networkx_nodes(
+        G, pos, node_color="lightblue", node_size=1500, alpha=0.7, ax=ax
+    )
+
+    # Draw edges
+    nx.draw_networkx_edges(G, pos, edge_color="gray", arrows=True, arrowsize=20, ax=ax)
+
+    # Draw labels
+    nx.draw_networkx_labels(G, pos, font_size=10, font_weight="bold", ax=ax)
+
+    ax.set_title("Task Dependencies Graph", fontsize=16, fontweight="bold")
+    ax.axis("off")
+
+    return fig
+
+
+def analyze_workload(timeline):
+    """Analyze workload distribution by owner"""
+    workload_data = {}
+
+    for task_id, info in timeline.items():
+        owner = info["owner"]
+        if owner not in workload_data:
+            workload_data[owner] = {"total_tasks": 0, "total_duration": 0, "tasks": []}
+
+        workload_data[owner]["total_tasks"] += 1
+        workload_data[owner]["total_duration"] += info["duration"]
+        workload_data[owner]["tasks"].append(
+            {
+                "task_id": task_id,
+                "task": info["task"],
+                "duration": info["duration"],
+                "start_time": info["start_time"],
+                "end_time": info["end_time"],
+            }
         )
 
-    # Configure column types for the data editor
-    column_config = {
-        "Task ID": st.column_config.TextColumn(
-            "Task ID*",
-            required=True,
-            max_chars=10,
-            help="Unique identifier for the task (e.g., T001, T002)",
-        ),
-        "Task Name": st.column_config.TextColumn(
-            "Task Name*", required=True, max_chars=100
-        ),
-        "Owner": st.column_config.TextColumn("Owner*", required=True, max_chars=50),
-        "Description": st.column_config.TextColumn("Description", max_chars=200),
-        "Definition of Done": st.column_config.TextColumn(
-            "Definition of Done", max_chars=200
-        ),
-        "Optimistic Time (days)": st.column_config.NumberColumn(
-            "Optimistic Time (days)*",
-            min_value=0.1,
-            max_value=1000.0,
-            step=0.1,
-            format="%.1f",
-            required=True,
-        ),
-        "Most Likely Time (days)": st.column_config.NumberColumn(
-            "Most Likely Time (days)*",
-            min_value=0.1,
-            max_value=1000.0,
-            step=0.1,
-            format="%.1f",
-            required=True,
-        ),
-        "Pessimistic Time (days)": st.column_config.NumberColumn(
-            "Pessimistic Time (days)*",
-            min_value=0.1,
-            max_value=1000.0,
-            step=0.1,
-            format="%.1f",
-            required=True,
-        ),
-        "Dependencies": st.column_config.TextColumn(
-            "Dependencies",
-            help="Comma-separated Task IDs that must be completed before this task (e.g., T001,T002)",
-            max_chars=200,
-        ),
+    return workload_data
+
+
+def calculate_confidence_intervals(timeline):
+    """Calculate confidence intervals for project completion"""
+    total_variance = 0
+    critical_path_tasks = []
+
+    # For this simplified version, we'll consider all tasks as potentially on critical path
+    for task_id, info in timeline.items():
+        total_variance += info["std_dev"] ** 2
+        critical_path_tasks.append(task_id)
+
+    total_std_dev = math.sqrt(total_variance)
+
+    # Calculate project completion time
+    project_end = max(info["end_time"] for info in timeline.values())
+
+    # Calculate confidence intervals
+    confidence_intervals = {
+        "1_sd": (project_end - total_std_dev, project_end + total_std_dev),
+        "2_sd": (project_end - 2 * total_std_dev, project_end + 2 * total_std_dev),
+        "3_sd": (project_end - 3 * total_std_dev, project_end + 3 * total_std_dev),
     }
 
-    # Data editor for tasks
-    edited_data = st.data_editor(
-        initial_data,
-        column_config=column_config,
-        num_rows="dynamic",
-        use_container_width=True,
-        key="tasks_editor",
+    return confidence_intervals, project_end, total_std_dev
+
+
+def main():
+    st.title("📊 Simply Estimate - Project Planning Tool")
+    st.markdown(
+        "*Using PERT (Program Evaluation And Review Technique) and CPM (Critical Path Method)*"
     )
 
-    button_col1, button_col2 = st.columns([1, 1])
+    # Sidebar for file upload
+    st.sidebar.header("Upload Project Data")
+    uploaded_file = st.sidebar.file_uploader(
+        "Choose an Excel file", type=["xlsx", "xls"]
+    )
 
-    with button_col1:
-        if st.button("💾 Save All Tasks", type="primary"):
-            # Validate and save tasks
-            valid_tasks = []
-            errors = []
-            task_ids = set()
+    if uploaded_file is not None:
+        try:
+            # Read Excel file
+            df = pd.read_excel(uploaded_file)
 
-            for idx, row in edited_data.iterrows():
-                # Check required fields
-                if pd.isna(row["Task ID"]) or row["Task ID"].strip() == "":
-                    errors.append(f"Row {idx + 1}: Task ID is required")
-                    continue
-                if pd.isna(row["Task Name"]) or row["Task Name"].strip() == "":
-                    errors.append(f"Row {idx + 1}: Task Name is required")
-                    continue
-                if pd.isna(row["Owner"]) or row["Owner"].strip() == "":
-                    errors.append(f"Row {idx + 1}: Owner is required")
-                    continue
-                if (
-                    pd.isna(row["Optimistic Time (days)"])
-                    or pd.isna(row["Most Likely Time (days)"])
-                    or pd.isna(row["Pessimistic Time (days)"])
-                ):
-                    errors.append(f"Row {idx + 1}: All time estimates are required")
-                    continue
+            # Validate required columns
+            required_columns = [
+                "Project",
+                "Task ID",
+                "Task",
+                "Description",
+                "DoD",
+                "Dependency",
+                "Owner",
+                "Optimistic",
+                "Nominal",
+                "Pessimistic",
+            ]
 
-                # Check for duplicate Task IDs
-                task_id = row["Task ID"].strip().upper()
-                if task_id in task_ids:
-                    errors.append(f"Row {idx + 1}: Task ID '{task_id}' is duplicated")
-                    continue
-                task_ids.add(task_id)
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                st.error(f"Missing required columns: {missing_columns}")
+                st.stop()
 
-                # Validate time estimates
-                opt_time = row["Optimistic Time (days)"]
-                likely_time = row["Most Likely Time (days)"]
-                pess_time = row["Pessimistic Time (days)"]
-
-                if not (opt_time <= likely_time <= pess_time):
-                    errors.append(
-                        f"Row {idx + 1}: Time estimates must satisfy Optimistic ≤ Most Likely ≤ Pessimistic"
+            # Calculate PERT estimates if not provided
+            if "Expected" not in df.columns or "Standard Deviation" not in df.columns:
+                df["Expected"], df["Standard Deviation"] = zip(
+                    *df.apply(
+                        lambda row: calculate_pert_estimates(
+                            row["Optimistic"], row["Nominal"], row["Pessimistic"]
+                        ),
+                        axis=1,
                     )
+                )
+
+            # Calculate confidence intervals if not provided
+            for col in ["1 sd", "2 sd", "3 sd"]:
+                if col not in df.columns:
+                    if col == "1 sd":
+                        df[col] = df["Expected"] + df["Standard Deviation"]
+                    elif col == "2 sd":
+                        df[col] = df["Expected"] + 2 * df["Standard Deviation"]
+                    elif col == "3 sd":
+                        df[col] = df["Expected"] + 3 * df["Standard Deviation"]
+
+            # Ensure proper data types for display
+            df["Task ID"] = df["Task ID"].astype(str)
+            df["Dependency"] = df["Dependency"].fillna("").astype(str)
+
+            # Display raw data
+            st.header("📋 Project Data Overview")
+            st.dataframe(df)
+
+            # Get unique projects
+            projects = df["Project"].unique()
+
+            for project in projects:
+                st.header(f"🎯 Project: {project}")
+
+                # Filter data for current project
+                project_df = df[df["Project"] == project].copy()
+
+                # Perform topological sort
+                topo_order, G = topological_sort(project_df)
+                if topo_order is None:
                     continue
 
-                # Create task object
-                task = {
-                    "task_id": task_id,
-                    "name": row["Task Name"].strip(),
-                    "owner": row["Owner"].strip(),
-                    "description": (
-                        row["Description"] if pd.notna(row["Description"]) else ""
-                    ),
-                    "definition_of_done": (
-                        row["Definition of Done"]
-                        if pd.notna(row["Definition of Done"])
-                        else ""
-                    ),
-                    "min_time": opt_time,
-                    "most_likely_time": likely_time,
-                    "max_time": pess_time,
-                    "dependencies": (
-                        row["Dependencies"].strip().upper()
-                        if pd.notna(row["Dependencies"])
-                        else ""
-                    ),
-                }
-                valid_tasks.append(task)
+                # Calculate project timeline
+                timeline = calculate_project_timeline(project_df, topo_order)
 
-            # Validate dependencies after all tasks are processed
-            if not errors:
-                all_task_ids = {task["task_id"] for task in valid_tasks}
-                for idx, task in enumerate(valid_tasks):
-                    if task["dependencies"]:
-                        deps = [
-                            dep.strip()
-                            for dep in task["dependencies"].split(",")
-                            if dep.strip()
+                # Add debug information
+                with st.expander("🔍 Debug Information"):
+                    st.write("**Task Order (Topological Sort):**")
+                    st.write(topo_order)
+
+                    st.write("**Dependencies:**")
+                    for _, row in project_df.iterrows():
+                        deps = parse_dependencies(row["Dependency"])
+                        if deps:
+                            st.write(f"Task {row['Task ID']}: depends on {deps}")
+
+                    st.write("**Timeline Calculation:**")
+                    for task_id, info in timeline.items():
+                        st.write(
+                            f"Task {task_id}: Start={info['start_time']:.1f}, End={info['end_time']:.1f}, Duration={info['duration']:.1f}"
+                        )
+
+                # Create tabs for different views
+                tab1, tab2, tab3, tab4 = st.tabs(
+                    ["📊 Timeline", "🔗 Dependencies", "👥 Workload", "📈 Analysis"]
+                )
+
+                with tab1:
+                    st.subheader("Gantt Chart")
+                    gantt_fig = create_gantt_chart(timeline, project)
+                    st.plotly_chart(gantt_fig, use_container_width=True)
+
+                    # Project summary
+                    project_end = max(info["end_time"] for info in timeline.values())
+                    st.metric("Project Duration", f"{project_end:.1f} days")
+
+                with tab2:
+                    st.subheader("Task Dependencies")
+                    if len(G.edges()) > 0:
+                        dep_fig = create_dependency_graph(project_df, G)
+                        st.pyplot(dep_fig)
+                    else:
+                        st.info("No dependencies found for this project.")
+
+                with tab3:
+                    st.subheader("Workload Distribution")
+                    workload_data = analyze_workload(timeline)
+
+                    # Create workload chart
+                    workload_df = pd.DataFrame(
+                        [
+                            {
+                                "Owner": owner,
+                                "Total Tasks": data["total_tasks"],
+                                "Total Duration": data["total_duration"],
+                            }
+                            for owner, data in workload_data.items()
                         ]
-                        for dep in deps:
-                            if dep not in all_task_ids:
-                                errors.append(
-                                    f"Task {task['task_id']}: Dependency '{dep}' does not exist"
+                    )
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        fig_tasks = px.bar(
+                            workload_df,
+                            x="Owner",
+                            y="Total Tasks",
+                            title="Number of Tasks per Person",
+                        )
+                        st.plotly_chart(fig_tasks, use_container_width=True)
+
+                    with col2:
+                        fig_duration = px.bar(
+                            workload_df,
+                            x="Owner",
+                            y="Total Duration",
+                            title="Total Duration per Person (days)",
+                        )
+                        st.plotly_chart(fig_duration, use_container_width=True)
+
+                    # Detailed workload breakdown
+                    st.subheader("Detailed Workload Breakdown")
+                    for owner, data in workload_data.items():
+                        with st.expander(
+                            f"{owner} - {data['total_tasks']} tasks, {data['total_duration']:.1f} days"
+                        ):
+                            for task in data["tasks"]:
+                                st.write(
+                                    f"**{task['task_id']}**: {task['task']} ({task['duration']:.1f} days)"
                                 )
 
-            if errors:
-                st.error(
-                    "Please fix the following errors:\n"
-                    + "\n".join(f"• {error}" for error in errors)
-                )
-            else:
-                st.session_state.tasks = valid_tasks
-                st.success(f"Successfully saved {len(valid_tasks)} tasks!")
-                st.rerun()
+                with tab4:
+                    st.subheader("Project Analysis")
 
-    with button_col2:
-        if st.session_state.tasks:
-            if st.button("🗑️ Clear All Tasks", type="secondary"):
-                st.session_state.tasks = []
-                st.rerun()
-
-# Section 2: Analysis (Right Column)
-with col_right:
-
-    # Section 2: Analysis
-    st.header("📊 Section 2: Project Analysis")
-
-    # Resource constraints toggle
-    st.subheader("⚙️ Resource Settings")
-    resource_constrained = st.checkbox(
-        "Enable Resource Constraints",
-        value=True,
-        help="When enabled, tasks with the same owner cannot run in parallel (realistic for single-person or limited teams)",
-    )
-
-    if len(st.session_state.tasks) > 0:
-        tasks_df = pd.DataFrame(st.session_state.tasks)
-        critical_path, slack_times, project_duration = find_critical_path(
-            tasks_df, resource_constrained
-        )
-
-        # Critical Path Analysis
-        st.subheader("🎯 Critical Path Analysis")
-
-        if critical_path:
-            # Create a mapping of task_id to task_name for better display
-            task_id_to_name = {
-                task["task_id"]: task["name"] for task in st.session_state.tasks
-            }
-            critical_path_display = [
-                f"{task_id} ({task_id_to_name[task_id]})" for task_id in critical_path
-            ]
-            st.success(f"**Critical Path:** {' → '.join(critical_path_display)}")
-        else:
-            st.warning(
-                "Could not determine critical path. Please check task dependencies."
-            )
-
-        # PERT Analysis Summary
-        st.subheader("📊 PERT Analysis Summary")
-
-        total_expected = sum(
-            [
-                calculate_pert_estimates(
-                    task["min_time"], task["max_time"], task["most_likely_time"]
-                )[0]
-                for task in st.session_state.tasks
-            ]
-        )
-
-        total_variance = sum(
-            [
-                calculate_pert_estimates(
-                    task["min_time"], task["max_time"], task["most_likely_time"]
-                )[1]
-                for task in st.session_state.tasks
-                if task["task_id"] in critical_path
-            ]
-        )
-
-        project_std_dev = np.sqrt(total_variance)
-
-        # Calculate comparison with unlimited resources
-        if resource_constrained:
-            _, _, unlimited_duration = find_critical_path(
-                tasks_df, resource_constrained=False
-            )
-            time_difference = project_duration - unlimited_duration
-        else:
-            unlimited_duration = project_duration
-            time_difference = 0
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.metric(
-                "Total Work Effort",
-                f"{total_expected:.1f} days",
-                help="Sum of all individual task durations",
-            )
-            st.metric("Actual Project Duration", f"{project_duration:.1f} days")
-
-        with col2:
-            st.metric("Project Standard Deviation", f"{project_std_dev:.1f} days")
-            if resource_constrained:
-                st.metric(
-                    "Resource Impact",
-                    (
-                        f"+{time_difference:.1f} days"
-                        if time_difference > 0
-                        else f"{time_difference:.1f} days"
-                    ),
-                    help="Additional time due to resource constraints vs unlimited resources",
-                )
-            else:
-                st.metric(
-                    "68% Confidence Range",
-                    f"{project_duration - project_std_dev:.1f} - {project_duration + project_std_dev:.1f} days",
-                )
-
-        # Explain the difference between the metrics
-        if resource_constrained:
-            if time_difference > 0:
-                st.info(
-                    f"📋 **Resource-Constrained Scheduling**: Tasks with the same owner are scheduled sequentially. "
-                    f"This adds **{time_difference:.1f} days** compared to unlimited resources scenario."
-                )
-            else:
-                st.info(
-                    "📋 **Resource-Constrained Scheduling**: Tasks with the same owner are scheduled sequentially. "
-                    "No additional time needed as tasks don't conflict."
-                )
-
-            # Show breakdown by owner
-            if time_difference > 0:
-                st.subheader("👥 Resource Utilization")
-                owner_breakdown = {}
-                for task in st.session_state.tasks:
-                    owner = task["owner"]
-                    expected_time, _, _ = calculate_pert_estimates(
-                        task["min_time"], task["max_time"], task["most_likely_time"]
+                    # Calculate confidence intervals
+                    confidence_intervals, project_end, total_std_dev = (
+                        calculate_confidence_intervals(timeline)
                     )
-                    if owner not in owner_breakdown:
-                        owner_breakdown[owner] = {"tasks": 0, "total_time": 0}
-                    owner_breakdown[owner]["tasks"] += 1
-                    owner_breakdown[owner]["total_time"] += expected_time
 
-                for owner, info in owner_breakdown.items():
-                    if info["tasks"] > 1:
-                        st.write(
-                            f"**{owner}**: {info['tasks']} tasks, {info['total_time']:.1f} days total work"
+                    # Display metrics
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                        st.metric("Expected Duration", f"{project_end:.1f} days")
+
+                    with col2:
+                        st.metric("Standard Deviation", f"{total_std_dev:.1f} days")
+
+                    with col3:
+                        st.metric("Total Tasks", len(timeline))
+
+                    # Confidence intervals
+                    st.subheader("Confidence Intervals")
+                    ci_data = []
+                    for level, (lower, upper) in confidence_intervals.items():
+                        ci_data.append(
+                            {
+                                "Confidence Level": level.replace("_", " ").upper(),
+                                "Lower Bound": f"{lower:.1f} days",
+                                "Upper Bound": f"{upper:.1f} days",
+                                "Range": f"{upper - lower:.1f} days",
+                            }
                         )
-                    else:
-                        st.write(
-                            f"**{owner}**: {info['tasks']} task, {info['total_time']:.1f} days"
+
+                    ci_df = pd.DataFrame(ci_data)
+                    st.dataframe(ci_df)
+
+                    # Risk analysis
+                    st.subheader("Risk Analysis")
+                    st.write("**Interpretation:**")
+                    st.write(
+                        "- **68% confidence**: Project will complete between {:.1f} and {:.1f} days".format(
+                            confidence_intervals["1_sd"][0],
+                            confidence_intervals["1_sd"][1],
                         )
-        else:
-            st.warning(
-                "⚠️ **Unlimited Resources Mode**: All tasks without dependencies start simultaneously, "
-                "assuming unlimited resources are available."
+                    )
+                    st.write(
+                        "- **95% confidence**: Project will complete between {:.1f} and {:.1f} days".format(
+                            confidence_intervals["2_sd"][0],
+                            confidence_intervals["2_sd"][1],
+                        )
+                    )
+                    st.write(
+                        "- **99.7% confidence**: Project will complete between {:.1f} and {:.1f} days".format(
+                            confidence_intervals["3_sd"][0],
+                            confidence_intervals["3_sd"][1],
+                        )
+                    )
+
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
+            st.info(
+                "Please ensure your Excel file contains all required columns and is properly formatted."
             )
 
-        # Export functionality
-        st.subheader("💾 Export Data")
-
-        if st.button("Download Project Data as CSV"):
-            # Create comprehensive export data
-            export_data = []
-            for task in st.session_state.tasks:
-                expected_time, variance, std_dev = calculate_pert_estimates(
-                    task["min_time"], task["max_time"], task["most_likely_time"]
-                )
-                slack = slack_times.get(task["task_id"], 0)
-                is_critical = task["task_id"] in critical_path
-
-                export_data.append(
-                    {
-                        "Task ID": task["task_id"],
-                        "Task Name": task["name"],
-                        "Owner": task["owner"],
-                        "Description": task["description"],
-                        "Definition of Done": task["definition_of_done"],
-                        "Optimistic Time": task["min_time"],
-                        "Most Likely Time": task["most_likely_time"],
-                        "Pessimistic Time": task["max_time"],
-                        "Expected Time": expected_time,
-                        "Standard Deviation": std_dev,
-                        "Dependencies": task["dependencies"],
-                        "Slack Time": slack,
-                        "Is Critical": is_critical,
-                    }
-                )
-
-            export_df = pd.DataFrame(export_data)
-            csv = export_df.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name=f"project_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv",
-            )
     else:
-        st.info("Add some tasks above to see the project analysis!")
+        st.info("Please upload an Excel file to get started.")
+
+        # Show sample data format
+        st.header("📝 Expected File Format")
+        st.write("Your Excel file should contain the following columns:")
+
+        sample_data = {
+            "Project": ["Project Alpha", "Project Alpha", "Project Alpha"],
+            "Task ID": ["001", "002", "003"],
+            "Task": ["Design UI", "Backend API", "Integration"],
+            "Description": [
+                "Create user interface",
+                "Develop REST API",
+                "Integrate frontend with backend",
+            ],
+            "DoD": [
+                "UI mockups approved",
+                "API endpoints tested",
+                "End-to-end testing complete",
+            ],
+            "Dependency": ["", "001", "001,002"],
+            "Owner": ["Alice", "Bob", "Charlie"],
+            "Optimistic": [3, 5, 2],
+            "Nominal": [5, 8, 4],
+            "Pessimistic": [8, 12, 7],
+        }
+
+        sample_df = pd.DataFrame(sample_data)
+        st.dataframe(sample_df)
+
+        st.markdown(
+            """
+        **Column Descriptions:**
+        - **Project**: Name of the project
+        - **Task ID**: Unique identifier for each task (e.g., 001, 002, 003)
+        - **Task**: Task name/title
+        - **Description**: Detailed description of the task
+        - **DoD**: Definition of Done
+        - **Dependency**: Task IDs that must be completed before this task (comma-separated for multiple dependencies)
+        - **Owner**: Person responsible for the task
+        - **Optimistic**: Best-case estimate (in days)
+        - **Nominal**: Most likely estimate (in days)
+        - **Pessimistic**: Worst-case estimate (in days)
+        
+        *Note: The app will automatically calculate Expected time, Standard Deviation, and confidence intervals using PERT formulas.*
+        """
+        )
+
+
+if __name__ == "__main__":
+    main()
