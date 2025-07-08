@@ -1,5 +1,6 @@
 import math
 from datetime import datetime, timedelta
+from io import BytesIO
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -706,6 +707,23 @@ def main():
 
         sample_df = pd.DataFrame(sample_data)
         st.dataframe(sample_df)
+
+        # Create a BytesIO buffer
+        excel_buffer = BytesIO()
+
+        # Write the sample dataframe to Excel
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            sample_df.to_excel(writer, sheet_name="Sample Project", index=False)
+
+        excel_data = excel_buffer.getvalue()
+
+        st.download_button(
+            label="📥 Download Sample Excel Template",
+            data=excel_data,
+            file_name="simply_estimate_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            help="Download a sample Excel file with the correct format and example data",
+        )
 
         st.markdown(
             """
