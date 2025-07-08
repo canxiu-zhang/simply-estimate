@@ -14,14 +14,14 @@ def create_sample_project():
     sample_data = {
         "Project": ["E-Commerce Platform"] * 12,
         "Task ID": [
-            "001",
-            "002",
-            "003",
-            "004",
-            "005",
-            "006",
-            "007",
-            "008",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
             "009",
             "010",
             "011",
@@ -71,15 +71,15 @@ def create_sample_project():
         ],
         "Dependency": [
             "",  # Requirements Analysis - no dependencies
-            "001",  # Database Design depends on Requirements
-            "001",  # UI/UX Design depends on Requirements
-            "002",  # User Auth depends on Database Design
-            "002",  # Product Catalog depends on Database Design
-            "002,004",  # Shopping Cart depends on Database and Auth
-            "004",  # Payment depends on User Auth
-            "005,006",  # Order Management depends on Catalog and Cart
-            "001",  # Testing Framework depends on Requirements
-            "003,004,005,006,007,008",  # Unit Testing depends on main features
+            "1",  # Database Design depends on Requirements
+            "1",  # UI/UX Design depends on Requirements
+            "2",  # User Auth depends on Database Design
+            "2",  # Product Catalog depends on Database Design
+            "2,4",  # Shopping Cart depends on Database and Auth
+            "4",  # Payment depends on User Auth
+            "5,6",  # Order Management depends on Catalog and Cart
+            "1",  # Testing Framework depends on Requirements
+            "3,4,5,6,7,8",  # Unit Testing depends on main features
             "009,010",  # Integration Testing depends on Testing Framework and Unit Tests
             "011",  # Deployment depends on Integration Testing
         ],
@@ -114,7 +114,7 @@ def create_multi_project_sample():
     # Second project data - Mobile App
     project2_data = {
         "Project": ["Mobile App"] * 8,
-        "Task ID": ["M001", "M002", "M003", "M004", "M005", "M006", "M007", "M008"],
+        "Task ID": ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"],
         "Task": [
             "Market Research",
             "App Architecture",
@@ -147,13 +147,13 @@ def create_multi_project_sample():
         ],
         "Dependency": [
             "",  # Market Research - no dependencies
-            "M001",  # App Architecture depends on Market Research
-            "M002",  # Backend API depends on Architecture
-            "M002",  # iOS Development depends on Architecture
-            "M002",  # Android Development depends on Architecture
-            "M003,M004,M005",  # API Integration depends on API and both apps
-            "M006",  # Testing depends on Integration
-            "M007",  # Release depends on Testing
+            "M1",  # App Architecture depends on Market Research
+            "M2",  # Backend API depends on Architecture
+            "M2",  # iOS Development depends on Architecture
+            "M2",  # Android Development depends on Architecture
+            "M3,M4,M5",  # API Integration depends on API and both apps
+            "M6",  # Testing depends on Integration
+            "M7",  # Release depends on Testing
         ],
         "Owner": [
             "Emma (PM)",

@@ -685,7 +685,7 @@ def main():
 
         sample_data = {
             "Project": ["Project Alpha", "Project Alpha", "Project Alpha"],
-            "Task ID": ["001", "002", "003"],
+            "Task ID": ["1", "2", "3"],
             "Task": ["Design UI", "Backend API", "Integration"],
             "Description": [
                 "Create user interface",
@@ -697,7 +697,7 @@ def main():
                 "API endpoints tested",
                 "End-to-end testing complete",
             ],
-            "Dependency": ["", "001", "001,002"],
+            "Dependency": ["", "1", "1,2"],
             "Owner": ["Alice", "Bob", "Charlie"],
             "Optimistic": [3, 5, 2],
             "Nominal": [5, 8, 4],
@@ -711,7 +711,7 @@ def main():
             """
         **Column Descriptions:**
         - **Project**: Name of the project
-        - **Task ID**: Unique identifier for each task (e.g., 001, 002, 003)
+        - **Task ID**: Unique identifier for each task (e.g., 1, 2, 3)
         - **Task**: Task name/title
         - **Description**: Detailed description of the task
         - **DoD**: Definition of Done
