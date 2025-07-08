@@ -1,32 +1,60 @@
-# simply-estimate
-Project planning tool that uses PERT (Program Evaluation And Review Technique) and CPM (Critical Path Methods).
+# Simply Estimate
 
-Inspired by the book The Clean Coder, A Code of Conduct for Professional Programmer 
+A project planning tool implementing PERT (Program Evaluation and Review Technique) and CPM (Critical Path Method) for simplify project estimation.
 
-Chapter 10 Estimation
+## Overview
 
-What is estimate?
- - For business, it is a commitment, which is about certainty.
- - But estimate is a guess. 
-    - No commitment is implied. No promise is made. 
-    - It is not a number. It is a distribution.
-    - Professionals draw a clear distinction between estimates and commitments.
-        - No implied commitments. E.g., 
-        - Can we say four then? No, it could be five or six.
-        - Can you try to make it no more than six days? 
-        - No, try means success, means working more than eight hours, working on weekends, skipping family vacations
+Simply Estimate helps project managers and development teams create realistic project estimates using proven statistical methods. Inspired by Robert C. Martin's "The Clean Coder: A Code of Conduct for Professional Programmers" (Chapter 10: Estimation).
 
-How to estimate?
-1. Program Evaluation and Review Technique (PERT)
-- Minimal (<1% chance it would happen)
-- Normal (most likely estimate)
-- Maximal (<1% chance it would happen)
+## Understanding Estimates vs. Commitments
 
-2. Estimate Tasks with wideband delphi
-- Goal: reach the consensus among a team
-- Warning: meeting, documents, ceremony overhead
+**Estimates** are probabilistic assessments based on available information:
+- Represent a range of possible outcomes, not fixed promises
+- Account for uncertainty and risk factors
+- Should not be treated as binding commitments
 
-3. The Law of Large Numbers
-- Goal: reduce error by break down large task into smaller tasks
-- Warning: integration is hardly perfect
+**Commitments** are firm promises with specific deliverables and deadlines:
+- Require certainty and accountability
+- Include buffer time for unforeseen circumstances
+- Should only be made after careful analysis
+
+### The Distinction in Practice
+
+Common conversations that illustrate the difference:
+
+**Business**: "Can we say four days then?"  
+**Developer**: "No, it could be five or six days."
+
+**Business**: "Can you try to make it no more than six days?"  
+**Developer**: "No, 'try' implies success, which means working more than eight hours, working weekends, or skipping family time."
+
+Professional developers maintain clear boundaries between estimates (uncertainty ranges) and commitments (firm promises).
+
+## Estimation Techniques
+
+### 1. PERT (Program Evaluation and Review Technique)
+
+Uses three-point estimation to model uncertainty:
+
+- **Optimistic (O)**: Best-case scenario (~1% probability)
+- **Most Likely (M)**: Most realistic estimate
+- **Pessimistic (P)**: Worst-case scenario (~1% probability)
+
+**Formula**: Expected Time = (O + 4M + P) / 6
+
+### 2. Wideband Delphi
+
+Collaborative estimation technique for team consensus:
+
+- **Benefits**: Leverages collective expertise and reduces individual bias
+- **Process**: Anonymous rounds of estimation with discussion between rounds
+- **Considerations**: Requires time investment and skilled facilitation
+
+### 3. Task Decomposition (Law of Large Numbers)
+
+Breaking large tasks into smaller, more predictable components:
+
+- **Benefits**: Reduces estimation error through statistical averaging
+- **Process**: Decompose complex tasks into 1-4 hour work units
+- **Considerations**: Account for integration complexity and dependencies
 
