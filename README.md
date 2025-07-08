@@ -1,7 +1,10 @@
 # simply-estimate
 Project planning tool that uses PERT (Program Evaluation And Review Technique) and CPM (Critical Path Methods).
 
+Inspired by the book The Clean Coder, A Code of Conduct for Professional Programmer 
+
 Chapter 10 Estimation
+
 What is estimate?
  - For business, it is a commitment, which is about certainty.
  - But estimate is a guess. 
@@ -10,19 +13,20 @@ What is estimate?
     - Professionals draw a clear distinction between estimates and commitments.
         - No implied commitments. E.g., 
         - Can we say four then? No, it could be five or six.
-        - Can you try to make it no more than six days? (try means success, means work more than eight hours, work on weekends, skip family vacations)
+        - Can you try to make it no more than six days? 
+        - No, try means success, means working more than eight hours, working on weekends, skipping family vacations
 
-Program Evaluation and Review Technique (PERT)
+How to estimate?
+1. Program Evaluation and Review Technique (PERT)
 - Minimal (<1% chance it would happen)
 - Normal (most likely estimate)
 - Maximal (<1% chance it would happen)
 
-
-Estimate Tasks with wideband delphi
+2. Estimate Tasks with wideband delphi
 - Goal: reach the consensus among a team
 - Warning: meeting, documents, ceremony overhead
 
-The Law of Large Numbers
+3. The Law of Large Numbers
 - Goal: reduce error by break down large task into smaller tasks
 - Warning: integration is hardly perfect
 
