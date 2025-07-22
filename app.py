@@ -126,19 +126,22 @@ def calculate_project_timeline(tasks_df, topo_order):
     return timeline
 
 
-def create_gantt_chart(timeline, project_name, start_date=None):
-    """Create Gantt chart visualization"""
+def create_gantt_chart(timeline, project_name, start_date=None, unavailable_periods=None):
+    """Create Gantt chart visualization with unavailable periods"""
     # Prepare data for Gantt chart
-    gantt_data = []
     base_date = (
         start_date if start_date else datetime.now().date()
     )  # Use provided start date or current date
+
+    # Separate task data and unavailable periods
+    task_data = []
+    unavail_data = []
 
     for task_id, info in timeline.items():
         start_date_calc = add_business_days(base_date, info["start_time"])
         end_date_calc = add_business_days(base_date, info["end_time"])
 
-        gantt_data.append(
+        task_data.append(
             {
                 "Task": f"{task_id}: {info['task'][:30]}...",
                 "Start": start_date_calc,
@@ -148,7 +151,22 @@ def create_gantt_chart(timeline, project_name, start_date=None):
             }
         )
 
-    gantt_df = pd.DataFrame(gantt_data)
+    # Add unavailable periods 
+    if unavailable_periods:
+        for i, period in enumerate(unavailable_periods):
+            unavail_data.append(
+                {
+                    "Task": f"🚫 {period['owner']} - Unavailable",
+                    "Start": period['start_date'],
+                    "Finish": period['end_date'],
+                    "Owner": "Unavailable Period",
+                    "Duration": (period['end_date'] - period['start_date']).days,
+                }
+            )
+
+    # Combine data
+    all_data = task_data + unavail_data
+    gantt_df = pd.DataFrame(all_data)
 
     # Create Gantt chart
     fig = px.timeline(
@@ -160,10 +178,17 @@ def create_gantt_chart(timeline, project_name, start_date=None):
         title=f"Project Timeline - {project_name}",
     )
 
+    # Customize the unavailable periods to be gray
+    if unavailable_periods:
+        for trace in fig.data:
+            if trace.name == "Unavailable Period":
+                trace.marker.color = "lightgray"
+                trace.opacity = 0.7
+
     fig.update_layout(
-        xaxis_title="Time (days)",
+        xaxis_title="Date",
         yaxis_title="Tasks",
-        height=max(400, len(gantt_data) * 30),
+        height=max(400, len(all_data) * 30),
         showlegend=True,
     )
 
@@ -349,11 +374,39 @@ def add_business_days(start_date, business_days):
     return current_date
 
 
+def initialize_unavailable_periods():
+    """Initialize session state for unavailable periods"""
+    if 'unavailable_periods' not in st.session_state:
+        st.session_state.unavailable_periods = []
+
+
+def add_unavailable_period(owner, start_date, end_date):
+    """Add an unavailable period to the session state"""
+    if 'unavailable_periods' not in st.session_state:
+        st.session_state.unavailable_periods = []
+    
+    unavailable_period = {
+        'owner': owner,
+        'start_date': start_date,
+        'end_date': end_date
+    }
+    st.session_state.unavailable_periods.append(unavailable_period)
+
+
+def remove_unavailable_period(index):
+    """Remove an unavailable period from the session state"""
+    if 'unavailable_periods' in st.session_state and 0 <= index < len(st.session_state.unavailable_periods):
+        st.session_state.unavailable_periods.pop(index)
+
+
 def main():
     st.title("📊 Simply Estimate")
     st.markdown(
         "*Using PERT (Program Evaluation And Review Technique) and CPM (Critical Path Method) to plan projects.*"
     )
+
+    # Initialize unavailable periods in session state
+    initialize_unavailable_periods()
 
     # Sidebar for file upload
     st.sidebar.header("Upload Project Data")
@@ -539,7 +592,57 @@ def main():
                                 key=f"start_date_{project}",
                             )
 
-                        gantt_fig = create_gantt_chart(timeline, project, start_date)
+                        # Unavailable periods management
+                        st.subheader("🚫 Manage Unavailable Periods")
+                        with st.expander("Add Unavailable Period", expanded=False):
+                            # Get unique owners from the project
+                            project_owners = project_df["Owner"].unique().tolist()
+                            
+                            col_owner, col_start, col_end, col_submit = st.columns([2, 2, 2, 1])
+                            
+                            with col_owner:
+                                selected_owner = st.selectbox(
+                                    "Owner",
+                                    options=project_owners,
+                                    key=f"unavail_owner_{project}"
+                                )
+                            
+                            with col_start:
+                                unavail_start = st.date_input(
+                                    "Start Date",
+                                    value=start_date,
+                                    key=f"unavail_start_{project}"
+                                )
+                            
+                            with col_end:
+                                unavail_end = st.date_input(
+                                    "End Date",
+                                    value=start_date + timedelta(days=1),
+                                    key=f"unavail_end_{project}"
+                                )
+                            
+                            with col_submit:
+                                if st.button("Add Period", key=f"add_unavail_{project}"):
+                                    if unavail_end > unavail_start:
+                                        add_unavailable_period(selected_owner, unavail_start, unavail_end)
+                                        st.success(f"Added unavailable period for {selected_owner}")
+                                        st.rerun()
+                                    else:
+                                        st.error("End date must be after start date")
+
+                        # Display current unavailable periods
+                        if st.session_state.unavailable_periods:
+                            st.subheader("📋 Current Unavailable Periods")
+                            for i, period in enumerate(st.session_state.unavailable_periods):
+                                col_info, col_remove = st.columns([4, 1])
+                                with col_info:
+                                    st.write(f"**{period['owner']}**: {period['start_date']} to {period['end_date']}")
+                                with col_remove:
+                                    if st.button("Remove", key=f"remove_unavail_{i}_{project}"):
+                                        remove_unavailable_period(i)
+                                        st.rerun()
+
+                        gantt_fig = create_gantt_chart(timeline, project, start_date, st.session_state.unavailable_periods)
                         st.plotly_chart(gantt_fig, use_container_width=True)
 
                         # Project summary
